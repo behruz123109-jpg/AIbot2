@@ -12,7 +12,6 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-import os
 from dotenv import load_dotenv
 
 # .env faylidagi yashirin o'zgaruvchilarni yuklash
@@ -24,7 +23,7 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 DB_NAME = "bot_database.db"
 
 if not BOT_TOKEN or not GROQ_API_KEY or not ADMIN_ID:
-    raise ValueError("❌ Xatolik: BOT_TOKEN, GROQ_API_KEY yoki ADMIN_ID .env faylga kiritilmagan!")
+    raise ValueError("❌ Xatolik: BOT_TOKEN, GROQ_API_KEY yoki ADMIN_ID topilmadi!")
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -38,6 +37,7 @@ class AdminState(StatesGroup):
     set_owner = State()
     set_phone = State()
     set_price = State()
+    give_pro = State()  # YANGA QO'SHILDI: PRO berish uchun state
 
 # ========================================================
 # 🗄 MA'LUMOTLAR BAZASI VA SOZLAMALAR
@@ -79,7 +79,7 @@ async def set_setting(key, value):
         await db.commit()
 
 # ========================================================
-# 🔐 MAJBURIY OBUNA VA HAFTALIK LIMIT (Haftasiga 2 ta)
+# 🔐 MAJBURIY OBUNA VA HAFTALIK LIMIT
 # ========================================================
 async def check_subscription(user_id: int) -> bool:
     channel = await get_setting("channel", "Mavjud emas")
@@ -92,7 +92,6 @@ async def check_subscription(user_id: int) -> bool:
         return True
 
 async def check_user_limit(user_id: int) -> bool:
-    # Haftani aniqlash format: YYYY-WW (masalan: 2026-34)
     current_week = datetime.datetime.now().strftime("%Y-%W")
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT plan, requests_count, last_request_week FROM users WHERE user_id = ?", (user_id,)) as cursor:
@@ -104,12 +103,10 @@ async def check_user_limit(user_id: int) -> bool:
                 return True
                 
             if last_week != current_week:
-                # Yangi hafta boshlandi, limitni yangilaymiz (1 ta so'rov ketdi)
                 await db.execute("UPDATE users SET requests_count = 1, last_request_week = ? WHERE user_id = ?", (current_week, user_id))
                 await db.commit()
                 return True
             else:
-                # Shu hafta ichida
                 if count >= 2:
                     return False
                 await db.execute("UPDATE users SET requests_count = requests_count + 1 WHERE user_id = ?", (user_id,))
@@ -169,8 +166,11 @@ async def process_text_with_ai(user_text: str) -> dict:
                         content = content.strip("`").replace("json\n", "").replace("json", "").strip()
                     return json.loads(content)
                 else:
+                    error_text = await resp.text()
+                    logging.error(f"Groq API Chat xatosi: {error_text}")
                     return {"type": "error"}
         except Exception as e:
+            logging.error(f"Koddagi AI (Chat) Xatosi: {e}")
             return {"type": "error"}
 
 async def transcribe_voice(file_path: str) -> str:
@@ -181,16 +181,21 @@ async def transcribe_voice(file_path: str) -> str:
                 data = aiohttp.FormData()
                 data.add_field('file', f, filename='voice.ogg', content_type='audio/ogg')
                 data.add_field('model', 'whisper-large-v3')
+                # TURLI XATOLIKLAR OLDI OLINDI (URL TO'G'RILANDI)
                 async with session.post("[https://api.groq.com/openai/v1/audio/transcriptions](https://api.groq.com/openai/v1/audio/transcriptions)", headers=headers, data=data) as resp:
                     if resp.status == 200:
                         res_json = await resp.json()
                         return res_json.get("text", "")
+                    else:
+                        error_text = await resp.text()
+                        logging.error(f"Groq API Audio xatosi: {error_text}")
+                        return ""
         except Exception as e:
-            pass
-    return ""
+            logging.error(f"Koddagi AI (Audio) Xatosi: {e}")
+            return ""
 
 # ========================================================
-# 🎨 FOYDALANUVCHI INTERFEYSI (Klaviaturalar va Matnlar)
+# 🎨 FOYDALANUVCHI INTERFEYSI
 # ========================================================
 def main_menu_kb():
     return InlineKeyboardMarkup(
@@ -225,7 +230,7 @@ async def get_start_message(user_name: str) -> str:
     )
 
 # ========================================================
-# 👤 FOYDALANUVCHI BUYRUQLARI VA CALLBACKLAR
+# 👤 FOYDALANUVCHI BUYRUQLARI
 # ========================================================
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -246,10 +251,7 @@ async def ui_callbacks(call: CallbackQuery):
         await call.message.edit_text(text, reply_markup=main_menu_kb())
         
     elif action == "ui_buy_pro":
-        card = await get_setting("card")
-        owner = await get_setting("owner")
-        price = await get_setting("pro_price")
-        
+        card, owner, price = await get_setting("card"), await get_setting("owner"), await get_setting("pro_price")
         text = (
             "🌟 <b>PRO tarifiga ulanish</b>\n\n"
             "Cheksiz imkoniyatlarga ega bo'lish uchun to'lovni quyidagi karta raqamiga amalga oshiring:\n\n"
@@ -258,7 +260,6 @@ async def ui_callbacks(call: CallbackQuery):
             f"💰 Summa: <b>{price} so'm</b>\n\n"
             "<i>To'lovni amalga oshirgach, chekni Adminga yuboring va hisobingiz darhol PRO tarifiga o'tkaziladi.</i>"
         )
-        # Admin bilan bog'lanish tugmasini qo'shish
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ To'lov qildim (Adminga yozish)", url=f"tg://user?id={ADMIN_ID}")],
             [InlineKeyboardButton(text="◀️ Orqaga", callback_data="ui_back")]
@@ -310,10 +311,14 @@ async def handle_text(message: types.Message):
 
     wait_msg = await message.answer("⏳ <i>Matn sun'iy intellekt yordamida tahlil qilinmoqda...</i>")
     result = await process_text_with_ai(message.text)
-    await wait_msg.delete()
+    
+    try:
+        await wait_msg.delete()
+    except:
+        pass
 
     if result.get("type") == "error":
-        await message.answer("❌ Tizimda xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring.")
+        await message.answer("❌ Tizimda xatolik yuz berdi. Bot ma'muri loglarni tekshirishi kerak. Iltimos, birozdan so'ng yana urinib ko'ring.")
         return
 
     if result.get("type") == "reminder":
@@ -356,13 +361,21 @@ async def handle_voice(message: types.Message):
         
         text = await transcribe_voice(file_path)
         if not text:
-            await wait_msg.edit_text("❌ Ovozli xabarni o'qib bo'lmadi yoki juda qisqa.")
+            await wait_msg.edit_text("❌ Ovozli xabarni o'qib bo'lmadi, qisqa bo'lishi yoki API xatosi bo'lishi mumkin.")
             return
             
         await wait_msg.edit_text(f"📝 <b>Aniqlangan matn:</b> <i>{text}</i>\n\n⏳ Endi AI tahlil qilmoqda...")
         result = await process_text_with_ai(text)
-        await wait_msg.delete()
         
+        try:
+            await wait_msg.delete()
+        except:
+            pass
+        
+        if result.get("type") == "error":
+            await message.answer("❌ Tizimda AI ishlov berishda xatolik yuz berdi.")
+            return
+            
         if result.get("type") == "content":
             ans = (
                 "🎯 <b>3 xil mukammal variant (Ovozdan):</b>\n\n"
@@ -381,9 +394,8 @@ async def handle_voice(message: types.Message):
         if os.path.exists(file_path):
             os.remove(file_path)
 
-
 # ========================================================
-# 🛠 ADMIN PANEL LOGIKASI (Mukammal integratsiya)
+# 🛠 ADMIN PANEL LOGIKASI
 # ========================================================
 def admin_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -391,7 +403,7 @@ def admin_main_kb():
         [InlineKeyboardButton(text="⚙️ Majburiy Obuna", callback_data="adm_channel")],
         [InlineKeyboardButton(text="💳 To'lov sozlamalari", callback_data="adm_pay_menu")],
         [InlineKeyboardButton(text="💰 PRO narxi", callback_data="adm_price")],
-        [InlineKeyboardButton(text="PRO berish id orqali", callback_data="adm_give_pro")] # Yangi PRO berish tugmasi
+        [InlineKeyboardButton(text="👑 PRO berish ID orqali", callback_data="adm_give_pro")] # Tugma o'rnatildi
     ])
 
 def admin_pay_kb():
@@ -432,7 +444,7 @@ async def admin_callbacks(call: CallbackQuery, state: FSMContext):
         
     elif action == "adm_channel":
         curr = await get_setting("channel")
-        await call.message.edit_text(f"⚙️ Hozirgi kanal: <b>{curr}</b>\n\nYangi kanal userini kiriting:", reply_markup=cancel_kb())
+        await call.message.edit_text(f"⚙️ Hozirgi kanal: <b>{curr}</b>\n\nYangi kanal userini kiriting (@ bilan):", reply_markup=cancel_kb())
         await state.set_state(AdminState.set_channel)
         
     elif action == "adm_pay_menu":
@@ -443,6 +455,11 @@ async def admin_callbacks(call: CallbackQuery, state: FSMContext):
         states_map = {"adm_card": AdminState.set_card, "adm_owner": AdminState.set_owner, "adm_phone": AdminState.set_phone, "adm_price": AdminState.set_price}
         await call.message.edit_text("Yangi qiymatni kiriting:", reply_markup=cancel_kb())
         await state.set_state(states_map[action])
+
+    # YANGA QO'SHILDI: PRO berish logikasi
+    elif action == "adm_give_pro":
+        await call.message.edit_text("👤 PRO bermoqchi bo'lgan foydalanuvchining <b>Telegram ID</b> raqamini kiriting:", reply_markup=cancel_kb())
+        await state.set_state(AdminState.give_pro)
         
     await call.answer()
 
@@ -461,6 +478,27 @@ async def p_price(m: types.Message, state: FSMContext): await set_setting("pro_p
 
 @dp.message(AdminState.set_channel)
 async def p_channel(m: types.Message, state: FSMContext): await set_setting("channel", m.text); await state.clear(); await m.answer("✅ Kanal yangilandi!", reply_markup=admin_main_kb())
+
+# YANGA QO'SHILDI: PRO berishni qabul qilish
+@dp.message(AdminState.give_pro)
+async def p_give_pro(m: types.Message, state: FSMContext):
+    try:
+        user_id = int(m.text.strip())
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("UPDATE users SET plan='pro' WHERE user_id=?", (user_id,))
+            await db.commit()
+        await m.answer(f"✅ {user_id} egasiga muvaffaqiyatli PRO tarif berildi!", reply_markup=admin_main_kb())
+        
+        # Foydalanuvchini ogohlantirishga harakat qilish
+        try:
+            await bot.send_message(user_id, "🎉 <b>Tabriklaymiz!</b> Admin tomonidan sizga 💎 PRO tarif taqdim etildi. Endi botdan cheksiz foydalanishingiz mumkin!")
+        except Exception:
+            pass # Foydalanuvchi botni bloklagan bo'lishi mumkin
+            
+    except ValueError:
+        await m.answer("❌ Xatolik: Iltimos, faqat to'g'ri ID raqamini kiriting (masalan: 12345678).", reply_markup=admin_main_kb())
+    finally:
+        await state.clear()
 
 @dp.message(AdminState.broadcast)
 async def p_broadcast(m: types.Message, state: FSMContext):
