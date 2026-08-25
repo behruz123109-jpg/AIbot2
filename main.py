@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # .env faylidagi yashirin o'zgaruvchilarni yuklash
 load_dotenv()
 
-BOT_TOKEN = os.getenv("8863320976:AAHdL0wRWA9Ku83wTsMXkgoYUvQxRlPcJzQ")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
 DB_NAME = "bot_database.db"
