@@ -37,7 +37,7 @@ class AdminState(StatesGroup):
     set_owner = State()
     set_phone = State()
     set_price = State()
-    give_pro = State()  # YANGA QO'SHILDI: PRO berish uchun state
+    give_pro = State()
 
 # ========================================================
 # 🗄 MA'LUMOTLAR BAZASI VA SOZLAMALAR
@@ -55,7 +55,6 @@ async def init_db():
         await db.execute('''CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY, value TEXT
         )''')
-        # Boshlang'ich qiymatlar
         defaults = [
             ('pro_price', '15000'),
             ('card', '8600 1234 5678 9012'),
@@ -147,7 +146,7 @@ async def process_text_with_ai(user_text: str) -> dict:
 
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text}
@@ -181,7 +180,6 @@ async def transcribe_voice(file_path: str) -> str:
                 data = aiohttp.FormData()
                 data.add_field('file', f, filename='voice.ogg', content_type='audio/ogg')
                 data.add_field('model', 'whisper-large-v3')
-                # TURLI XATOLIKLAR OLDI OLINDI (URL TO'G'RILANDI)
                 async with session.post("[https://api.groq.com/openai/v1/audio/transcriptions](https://api.groq.com/openai/v1/audio/transcriptions)", headers=headers, data=data) as resp:
                     if resp.status == 200:
                         res_json = await resp.json()
@@ -403,7 +401,7 @@ def admin_main_kb():
         [InlineKeyboardButton(text="⚙️ Majburiy Obuna", callback_data="adm_channel")],
         [InlineKeyboardButton(text="💳 To'lov sozlamalari", callback_data="adm_pay_menu")],
         [InlineKeyboardButton(text="💰 PRO narxi", callback_data="adm_price")],
-        [InlineKeyboardButton(text="👑 PRO berish ID orqali", callback_data="adm_give_pro")] # Tugma o'rnatildi
+        [InlineKeyboardButton(text="👑 PRO berish ID orqali", callback_data="adm_give_pro")]
     ])
 
 def admin_pay_kb():
@@ -456,14 +454,12 @@ async def admin_callbacks(call: CallbackQuery, state: FSMContext):
         await call.message.edit_text("Yangi qiymatni kiriting:", reply_markup=cancel_kb())
         await state.set_state(states_map[action])
 
-    # YANGA QO'SHILDI: PRO berish logikasi
     elif action == "adm_give_pro":
         await call.message.edit_text("👤 PRO bermoqchi bo'lgan foydalanuvchining <b>Telegram ID</b> raqamini kiriting:", reply_markup=cancel_kb())
         await state.set_state(AdminState.give_pro)
         
     await call.answer()
 
-# Qisqartirilgan holatlarni saqlash
 @dp.message(AdminState.set_card)
 async def p_card(m: types.Message, state: FSMContext): await set_setting("card", m.text); await state.clear(); await m.answer("✅ Karta yangilandi!", reply_markup=admin_main_kb())
 
@@ -479,7 +475,6 @@ async def p_price(m: types.Message, state: FSMContext): await set_setting("pro_p
 @dp.message(AdminState.set_channel)
 async def p_channel(m: types.Message, state: FSMContext): await set_setting("channel", m.text); await state.clear(); await m.answer("✅ Kanal yangilandi!", reply_markup=admin_main_kb())
 
-# YANGA QO'SHILDI: PRO berishni qabul qilish
 @dp.message(AdminState.give_pro)
 async def p_give_pro(m: types.Message, state: FSMContext):
     try:
@@ -489,11 +484,10 @@ async def p_give_pro(m: types.Message, state: FSMContext):
             await db.commit()
         await m.answer(f"✅ {user_id} egasiga muvaffaqiyatli PRO tarif berildi!", reply_markup=admin_main_kb())
         
-        # Foydalanuvchini ogohlantirishga harakat qilish
         try:
             await bot.send_message(user_id, "🎉 <b>Tabriklaymiz!</b> Admin tomonidan sizga 💎 PRO tarif taqdim etildi. Endi botdan cheksiz foydalanishingiz mumkin!")
         except Exception:
-            pass # Foydalanuvchi botni bloklagan bo'lishi mumkin
+            pass
             
     except ValueError:
         await m.answer("❌ Xatolik: Iltimos, faqat to'g'ri ID raqamini kiriting (masalan: 12345678).", reply_markup=admin_main_kb())
@@ -515,7 +509,6 @@ async def p_broadcast(m: types.Message, state: FSMContext):
                 except: pass
     await w.edit_text(f"✅ {succ} ta foydalanuvchiga yuborildi.", reply_markup=admin_main_kb())
 
-
 # ========================================================
 # ⏰ ORQA FON VAZIFASI (ESLATMALAR)
 # ========================================================
@@ -533,7 +526,6 @@ async def check_reminders():
                         except: pass
         except: pass
         await asyncio.sleep(30)
-
 
 # ========================================================
 # 🚀 ASOSIY ISHGA TUSHIRISH
