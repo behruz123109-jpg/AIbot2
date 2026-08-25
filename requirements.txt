@@ -1,5 +1,4 @@
-aiogram==3.15.0
-aiosqlite
+aiogram
 aiohttp
-apscheduler
-groq
+aiosqlite
+python-dotenv
