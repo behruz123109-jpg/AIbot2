@@ -1,3 +1,4 @@
-aiogram>=3.15.0
-groq>=0.11.0
-python-dotenv>=1.0.1
+aiogram>=3.0.0
+aiohttp
+aiosqlite
+python-dotenv
