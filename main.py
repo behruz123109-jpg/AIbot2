@@ -26,13 +26,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
 DB_NAME = "bot_database.db"
 
-# Groq 2026-yil avgustida bir qator modellarni (jumladan llama-3.1-8b-instant)
-# rasman yopdi. Shu sabab matn modeli sifatida ularning joriy tavsiyasi -
-# gpt-oss oilasi ishlatiladi. Agar birinchi model ishlamasa, avtomatik
-# ravishda zaxira modelga o'tiladi (fallback), shunda bot "modellar ishlamayapti"
-# muammosiga kelajakda ham chidamli bo'ladi.
 GROQ_TEXT_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
-GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"  # tezroq va arzonroq, hali faol model
+GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
@@ -42,9 +37,8 @@ if not BOT_TOKEN or not GROQ_API_KEY or not ADMIN_ID:
 try:
     ADMIN_ID_INT = int(ADMIN_ID)
 except ValueError:
-    raise ValueError("❌ Xatolik: ADMIN_ID faqat raqamlardan iborat bo'lishi kerak (masalan: 123456789)")
+    raise ValueError("❌ Xatolik: ADMIN_ID faqat raqamlardan iborat bo'lishi kerak")
 
-# Log fayl + konsolga yozib borish (xatolarni keyinchalik topish osonroq bo'ladi)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -54,13 +48,10 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
-
-# Butun bot davomida bitta aiohttp sessiyasidan foydalanamiz (har safar
-# yangi sessiya ochish o'rniga) — bu tezroq va resurs tejamkorroq ishlaydi.
 http_session: aiohttp.ClientSession | None = None
 
 
-# --- FSM (STATE) HOLATLAR (Admin uchun) ---
+# --- FSM (STATE) HOLATLAR ---
 class AdminState(StatesGroup):
     broadcast = State()
     broadcast_confirm = State()
@@ -70,6 +61,9 @@ class AdminState(StatesGroup):
     set_phone = State()
     set_price = State()
     give_pro = State()
+
+class UserState(StatesGroup):
+    waiting_for_receipt = State()
 
 
 # ========================================================
@@ -126,8 +120,6 @@ async def check_subscription(user_id: int) -> bool:
         member = await bot.get_chat_member(channel, user_id)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
-        # Kanal noto'g'ri kiritilgan yoki bot admin emas bo'lsa - foydalanuvchini
-        # bloklab qo'ymaslik uchun ruxsat beramiz, lekin logda ogohlantiramiz.
         logger.warning(f"Obuna tekshiruvida xatolik (kanal={channel}, user={user_id}): {e}")
         return True
 
@@ -223,8 +215,6 @@ async def process_text_with_ai(user_text: str) -> dict:
         '{"type": "content", "variant_1": "Rasmiy uslub", "variant_2": "Ijodiy emojilar bilan", "variant_3": "Qisqa va lo\'nda"}'
     )
 
-    # Bir nechta model bo'yicha ketma-ket urinib ko'ramiz (fallback). Shunday
-    # qilib, agar Groq bitta modelni o'chirib qo'ysa ham, bot ishlashda davom etadi.
     for model in GROQ_TEXT_MODELS:
         result = await _call_groq_chat(model, system_prompt, user_text)
         if result is not None:
@@ -268,7 +258,6 @@ def main_menu_kb():
         ]
     )
 
-
 def back_menu_kb():
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="◀️ Asosiy menyuga qaytish", callback_data="ui_back")]]
@@ -296,7 +285,8 @@ async def get_start_message(user_name: str) -> str:
 # 👤 FOYDALANUVCHI BUYRUQLARI
 # ========================================================
 @dp.message(CommandStart())
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT OR IGNORE INTO users (user_id, last_request_week, joined_at) VALUES (?, ?, ?)",
@@ -328,10 +318,11 @@ async def cmd_myid(message: types.Message):
 
 
 @dp.callback_query(F.data.startswith("ui_"))
-async def ui_callbacks(call: CallbackQuery):
+async def ui_callbacks(call: CallbackQuery, state: FSMContext):
     action = call.data
 
     if action == "ui_back":
+        await state.clear()
         text = await get_start_message(call.from_user.first_name)
         await safe_edit(call.message, text, main_menu_kb())
 
@@ -343,13 +334,13 @@ async def ui_callbacks(call: CallbackQuery):
             f"💳 Karta raqami: <code>{card}</code>\n"
             f"👤 Qabul qiluvchi: <b>{owner}</b>\n"
             f"💰 Summa: <b>{price} so'm</b>\n\n"
-            "<i>To'lovni amalga oshirgach, chekni Adminga yuboring va hisobingiz darhol PRO tarifiga o'tkaziladi.</i>"
+            "<i>📸 To'lovni amalga oshirgach, tasdiqlash uchun shu yerga to'lov chekini (rasmini) yuboring.</i>"
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ To'lov qildim (Adminga yozish)", url=f"tg://user?id={ADMIN_ID_INT}")],
             [InlineKeyboardButton(text="◀️ Orqaga", callback_data="ui_back")],
         ])
         await safe_edit(call.message, text, kb)
+        await state.set_state(UserState.waiting_for_receipt)
 
     elif action == "ui_profile":
         plan, left = await get_user_stats(call.from_user.id)
@@ -384,8 +375,88 @@ async def ui_callbacks(call: CallbackQuery):
     await call.answer()
 
 
+# ========================================================
+# 🧾 CHEK QABUL QILISH VA TASDIQLASH (YANGI)
+# ========================================================
+@dp.message(UserState.waiting_for_receipt)
+async def handle_receipt(message: types.Message, state: FSMContext):
+    if not message.photo:
+        await message.answer(
+            "⚠️ <b>Cheksiz qabul qilinmaydi!</b>\nIltimos, to'lov qilinganligini tasdiqlovchi chek rasmini yuboring.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Orqaga", callback_data="ui_back")]])
+        )
+        return
+
+    photo = message.photo[-1]
+    user_id = message.from_user.id
+    user_name = message.from_user.full_name
+    username = f"@{message.from_user.username}" if message.from_user.username else "yo'q"
+
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"adm_approve_pro_{user_id}")],
+        [InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adm_reject_pro_{user_id}")]
+    ])
+    
+    caption = (
+        f"🧾 <b>Yangi to'lov cheki!</b>\n\n"
+        f"👤 <b>Foydalanuvchi:</b> {user_name} ({username})\n"
+        f"🆔 <b>ID:</b> <code>{user_id}</code>\n\n"
+        f"Qabul qilasizmi?"
+    )
+    
+    try:
+        await bot.send_photo(ADMIN_ID_INT, photo.file_id, caption=caption, reply_markup=admin_kb)
+        await message.answer("✅ <b>Chekingiz adminga yuborildi.</b>\nAdmin tasdiqlagach, PRO tarifingiz avtomatik faollashadi!", reply_markup=main_menu_kb())
+        await state.clear()
+    except Exception as e:
+        logger.error(f"Chekni adminga yuborishda xatolik: {e}")
+        await message.answer("❌ Xatolik yuz berdi. Iltimos, keyinroq qayta urinib ko'ring yoki admin bilan bevosita bog'laning.")
+
+
+@dp.callback_query(F.data.startswith("adm_approve_pro_") | F.data.startswith("adm_reject_pro_"))
+async def admin_pro_approval(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔️ Sizda ruxsat yo'q.", show_alert=True)
+        return
+    
+    action = call.data
+    user_id = int(action.split("_")[-1])
+    
+    if action.startswith("adm_approve_pro_"):
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("UPDATE users SET plan='pro' WHERE user_id=?", (user_id,))
+            await db.commit()
+        
+        try:
+            await call.message.edit_caption(
+                caption=call.message.caption + "\n\n✅ <b>Tasdiqlandi va PRO berildi!</b>",
+                reply_markup=None
+            )
+        except TelegramBadRequest:
+            pass
+        
+        try:
+            await bot.send_message(user_id, "🎉 <b>Tabriklaymiz!</b> To'lovingiz tasdiqlandi va sizga 💎 PRO tarif taqdim etildi. Endi botdan cheksiz foydalanishingiz mumkin!")
+        except Exception:
+            pass
+    else:
+        try:
+            await call.message.edit_caption(
+                caption=call.message.caption + "\n\n❌ <b>Rad etildi!</b>",
+                reply_markup=None
+            )
+        except TelegramBadRequest:
+            pass
+        
+        try:
+            await bot.send_message(user_id, "❌ To'lovingiz rad etildi. Chekda muammo bo'lishi mumkin. Iltimos, batafsil ma'lumot uchun admin bilan bog'laning.")
+        except Exception:
+            pass
+            
+    await call.answer()
+
+
 async def safe_edit(message: types.Message, text: str, kb: InlineKeyboardMarkup):
-    """Xabar matnini xavfsiz tahrirlaydi (bir xil matn bo'lsa Telegram xatosini e'tiborsiz qoldiradi)."""
     try:
         await message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:
@@ -726,7 +797,6 @@ async def run_broadcast(status_message: types.Message, msg: str):
             succ += 1
         except Exception:
             fail += 1
-        # Telegram flood-limitiga tushib qolmaslik uchun har 25 xabardan keyin ozgina kutamiz
         if i % 25 == 0:
             await asyncio.sleep(1)
 
