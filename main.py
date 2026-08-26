@@ -17,7 +17,7 @@ from aiogram.exceptions import TelegramBadRequest
 from dotenv import load_dotenv
 
 # ========================================================
-# ⚙️  SOZLAMALAR VA YASHIRIN O'ZGARUVCHILAR
+# ⚙️ SOZLAMALAR VA YASHIRIN O'ZGARUVCHILAR
 # ========================================================
 load_dotenv()
 
@@ -26,7 +26,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
 DB_NAME = "bot_database.db"
 
-GROQ_TEXT_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+# Groq API’da amalda mavjud va barqaror ishlaydigan modellar
+GROQ_TEXT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -62,12 +63,13 @@ class AdminState(StatesGroup):
     set_price = State()
     give_pro = State()
 
+
 class UserState(StatesGroup):
     waiting_for_receipt = State()
 
 
 # ========================================================
-# 🗄  MA'LUMOTLAR BAZASI
+# 🗄 MA'LUMOTLAR BAZASI
 # ========================================================
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
@@ -183,7 +185,7 @@ async def _call_groq_chat(model: str, system_prompt: str, user_text: str) -> dic
             {"role": "user", "content": user_text},
         ],
         "response_format": {"type": "json_object"},
-        "temperature": 0.5,
+        "temperature": 0.2,
     }
     try:
         async with http_session.post(GROQ_API_URL, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
@@ -203,13 +205,16 @@ async def _call_groq_chat(model: str, system_prompt: str, user_text: str) -> dic
 
 
 async def process_text_with_ai(user_text: str) -> dict:
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_dt = datetime.datetime.now()
+    now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    
     system_prompt = (
-        f"Hozirgi vaqt: {now_str}.\n"
+        f"Hozirgi aniq vaqt va sana: {now_str}.\n"
         "Siz professional muharrir va eslatma assistentisiz.\n\n"
-        "1. AGAR MATNDA ESLATMA / VAZIFA / QARZ BO'LSA:\n"
+        "1. AGAR MATNDA ESLATMA / VAZIFA / QARZ / VAQT BELGILASH BO'LSA:\n"
+        "Foydalanuvchi aytgan nisbiy vaqtni (masalan: '1 minutdan keyin', 'ertaga 15:00 da', 'soat 21:56 da') hozirgi vaqtga qarab ANIQ hisoblang.\n"
         "Faqat quyidagi JSON formatida javob bering:\n"
-        '{"type": "reminder", "remind_at": "YYYY-MM-DD HH:MM:00", "reminder_text": "Matn", "formatted_date": "Vaqt"}\n\n'
+        '{"type": "reminder", "remind_at": "YYYY-MM-DD HH:MM:SS", "reminder_text": "Matn", "formatted_date": "YYYY-MM-DD HH:MM"}\n\n'
         "2. AGAR ODDIY MATN YOKI E'LON BO'LSA:\n"
         "Mazmunni o'zgartirmasdan, 3 xil uslubda tayyorlang va faqat quyidagi JSON formatida bering:\n"
         '{"type": "content", "variant_1": "Rasmiy uslub", "variant_2": "Ijodiy emojilar bilan", "variant_3": "Qisqa va lo\'nda"}'
@@ -257,6 +262,7 @@ def main_menu_kb():
             [InlineKeyboardButton(text="ℹ️ Bot haqida", callback_data="ui_about")],
         ]
     )
+
 
 def back_menu_kb():
     return InlineKeyboardMarkup(
@@ -376,7 +382,7 @@ async def ui_callbacks(call: CallbackQuery, state: FSMContext):
 
 
 # ========================================================
-# 🧾 CHEK QABUL QILISH VA TASDIQLASH (YANGI)
+# 🧾 CHEK QABUL QILISH VA TASDIQLASH
 # ========================================================
 @dp.message(UserState.waiting_for_receipt)
 async def handle_receipt(message: types.Message, state: FSMContext):
@@ -817,14 +823,14 @@ async def check_reminders():
                     due = await cursor.fetchall()
                 for r_id, u_id, r_text in due:
                     try:
-                        await bot.send_message(u_id, f"⏰ <b>ESLATMA VAQTI KELDI:</b>\n\n{r_text}")
+                        await bot.send_message(u_id, f"⏰ <b>ESLATMA VAQTI KELDI!</b>\n\n📌 {r_text}")
                     except Exception as e:
                         logger.warning(f"Eslatma yuborib bo'lmadi (user={u_id}): {e}")
                     await db.execute("UPDATE reminders SET is_sent=1 WHERE id=?", (r_id,))
                     await db.commit()
         except Exception as e:
             logger.error(f"Eslatmalarni tekshirishda xatolik: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(15)
 
 
 # ========================================================
@@ -840,7 +846,8 @@ async def main():
         logger.info("🚀 Bot to'liq ishga tushdi!")
         await dp.start_polling(bot)
     finally:
-        await http_session.close()
+        if http_session and not http_session.closed:
+            await http_session.close()
         await bot.session.close()
 
 
