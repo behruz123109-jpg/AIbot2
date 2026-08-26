@@ -28,7 +28,7 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 DB_NAME = "bot_database.db"
 
 # Groq API’da amalda mavjud va barqaror ishlaydigan modellar
-GROQ_TEXT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+GROQ_TEXT_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
 GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
