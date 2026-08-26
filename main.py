@@ -1,19 +1,20 @@
 import asyncio
-import logging
-import json
 import datetime
+import json
+import logging
 import os
+import re
 import aiohttp
 import aiosqlite
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode, ChatAction
+from aiogram.enums import ChatAction, ParseMode
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
 
 # ========================================================
@@ -174,7 +175,7 @@ async def get_user_stats(user_id: int):
 
 
 # ========================================================
-# 🤖 AI VA WHISPER FUNKSIYALARI
+# 🤖 AI VA WHISPER FUNKSIYALARI (TUZATILGAN)
 # ========================================================
 async def _call_groq_chat(model: str, system_prompt: str, user_text: str) -> dict | None:
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -185,15 +186,19 @@ async def _call_groq_chat(model: str, system_prompt: str, user_text: str) -> dic
             {"role": "user", "content": user_text},
         ],
         "response_format": {"type": "json_object"},
-        "temperature": 0.2,
+        "temperature": 0.1,
     }
     try:
         async with http_session.post(GROQ_API_URL, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
             if resp.status == 200:
                 res = await resp.json()
                 content = res['choices'][0]['message']['content'].strip()
-                if content.startswith("```"):
-                    content = content.strip("`").replace("json\n", "").replace("json", "").strip()
+
+                # Groq qaytargan matndan to'g'ridan-to'g mef JSON obyektini ajratib olish
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group(0)
+
                 return json.loads(content)
             else:
                 error_text = await resp.text()
@@ -210,7 +215,8 @@ async def process_text_with_ai(user_text: str) -> dict:
     
     system_prompt = (
         f"Hozirgi aniq vaqt va sana: {now_str}.\n"
-        "Siz professional muharrir va eslatma assistentisiz.\n\n"
+        "Siz professional muharrir va eslatma assistentisiz.\n"
+        "JAVOBINGIZ FAQAT VALID JSON OBYEKTI BO'LISHI SHART. HECH QANDAY ORTIQCHA MATN YOZMANGB.\n\n"
         "1. AGAR MATNDA ESLATMA / VAZIFA / QARZ / VAQT BELGILASH BO'LSA:\n"
         "Foydalanuvchi aytgan nisbiy vaqtni (masalan: '1 minutdan keyin', 'ertaga 15:00 da', 'soat 21:56 da') hozirgi vaqtga qarab ANIQ hisoblang.\n"
         "Faqat quyidagi JSON formatida javob bering:\n"
@@ -222,7 +228,7 @@ async def process_text_with_ai(user_text: str) -> dict:
 
     for model in GROQ_TEXT_MODELS:
         result = await _call_groq_chat(model, system_prompt, user_text)
-        if result is not None:
+        if result is not None and "type" in result:
             return result
 
     return {"type": "error"}
